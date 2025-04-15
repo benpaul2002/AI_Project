@@ -1,11 +1,12 @@
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from datasets import load_dataset
 import re
 import numpy as np
 from tqdm import tqdm
 from Q_learner import Q_Learner
+import torch
 
 def get_model(model_name):
     if model_name == "tinyllama":
@@ -17,18 +18,23 @@ def get_model(model_name):
             model_path=tinyllama_path,
             n_ctx=2048,
             n_threads=8,
-            n_gpu_layers=35  # Adjust based on your GPU capacity
+            n_gpu_layers=35,  # Adjust based on your GPU capacity
+            verbose=False,
         )
         return {
             'model': tinyllama,
             'cost': 1
         }
     elif model_name == "wizardmath":
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16  # Match your input dtype
+        )
         wizardmath_tokenizer = AutoTokenizer.from_pretrained("WizardLM/WizardMath-7B-V1.1")
         wizardmath_model = AutoModelForCausalLM.from_pretrained(
             "WizardLM/WizardMath-7B-V1.1",
             device_map="auto",
-            load_in_4bit=True
+            quantization_config=quantization_config,
         )
         return {
             'model': wizardmath_model,
@@ -50,26 +56,68 @@ def extract_answer(answer_text):
     return None
 
 def process_problem(problem, model_index, models):
-    prompt = f"Solve this math problem step by step: {problem['question']}"
+    prompt = f"""Solve this math problem step by step: 
+{problem['question']}
+
+Follow these instructions:
+1. Work through the problem step by step
+2. Calculate the final answer
+3. On the last line, write ONLY: #### <your numerical answer>
+
+-------------------
+EXAMPLE FORMAT:
+Step 1: [explanation]
+Step 2: [explanation]
+Final calculation: [calculation]
+#### <answer>
+-------------------
+
+NOW SOLVE THE PROBLEM CORRECTLY:
+"""
     
     if model_index == 0:  # tinyllama
         model_obj = models[0]['model']
-        result = model_obj.create_completion(
-            prompt,
-            max_tokens=512,
-            temperature=0.1,
-            stop=["Q:", "\n\n"]
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant that solves math problems step by step."
+            },
+            {
+                "role": "user",
+                "content": f"""Solve this math problem:
+{problem['question']}
+
+Show your work step by step and end with the final answer in the format: #### [number]
+
+Example of proper format:
+Question: Janet has 3 apples and buys 2 more. How many does she have?
+Step 1: Janet starts with 3 apples
+Step 2: She buys 2 more apples
+Step 3: Total apples = 3 + 2 = 5
+#### 5"""
+            }
+        ]
+        
+        # Use create_chat_completion with a zero temperature
+        result = model_obj.create_chat_completion(
+            messages=messages,
+            max_tokens=1024,
+            temperature=0.0,  # Zero temperature for deterministic output
+            stop=["User:", "Question:"]  # Prevent continuing to new questions
         )
-        return result['choices'][0]['text']
+        
+        return result['choices'][0]['message']['content']
     else:  # wizardmath
         model_obj = models[1]['model']
         tokenizer = models[1]['tokenizer']
         inputs = tokenizer(prompt, return_tensors="pt").to(model_obj.device)
         outputs = model_obj.generate(
             inputs.input_ids,
-            max_new_tokens=512,
+            max_new_tokens=1024,
             temperature=0.1,
-            do_sample=False
+            do_sample=True,
+            attention_mask=inputs.attention_mask,
+            pad_token_id=tokenizer.eos_token_id,
         )
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
@@ -89,7 +137,7 @@ if __name__ == "__main__":
     q_learner = Q_Learner(models)
 
     dataset = gsm8k_dataset['train']
-    for i in tqdm(range(len(dataset)-1), desc="Training Q-learner"):
+    for i in tqdm(range(10), desc="Training Q-learner"):
         current_problem = dataset[i]
         next_problem = dataset[i+1]
         
@@ -100,10 +148,17 @@ if __name__ == "__main__":
         
         # Process the current problem
         model_output = process_problem(current_problem, model_index, models)
+
+        if model_index == 0:
+            print(f"\nProblem {i}: {current_problem['question']}")
+            print(f"\nChosen model: {model_index} ({'cheap' if model_index == 0 else 'expensive'})")
+            print(f"\nModel output: {model_output}")
         
         # Extract answers and check correctness
         predicted_answer = extract_answer(model_output)
+        print(f"Predicted answer: {predicted_answer}")
         true_answer = extract_answer(current_problem["answer"])
+        print(f"True answer: {true_answer}")
         is_correct = (predicted_answer == true_answer) if predicted_answer and true_answer else False
         
         # Calculate reward
@@ -144,7 +199,7 @@ if __name__ == "__main__":
     test_dataset = gsm8k_dataset['test']
     correct_predictions = 0
     total_predictions = len(test_dataset)
-    for i in tqdm(range(total_predictions), desc="Testing Q-learner"):
+    for i in tqdm(range(1), desc="Testing Q-learner"):
         test_problem = test_dataset[i]
         test_state = q_learner.get_state(test_problem["question"])
         model_index, model = q_learner.choose_model(test_state)
@@ -154,6 +209,7 @@ if __name__ == "__main__":
 
         predicted_answer = extract_answer(model_output)
         true_answer = extract_answer(test_problem["answer"])
+        print(f"Predicted: {predicted_answer}, True: {true_answer}")
         is_correct = (predicted_answer == true_answer) if predicted_answer and true_answer else False
 
         if is_correct:
