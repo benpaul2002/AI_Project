@@ -1,6 +1,6 @@
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, pipeline
 from datasets import load_dataset
 import re
 import numpy as np
@@ -9,27 +9,11 @@ from Q_learner import Q_Learner
 import torch
 
 def get_model(model_name):
-    if model_name == "tinyllama":
-        tinyllama_path = hf_hub_download(
-            repo_id="TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
-            filename="tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-        )
-        tinyllama = Llama(
-            model_path=tinyllama_path,
-            n_ctx=2048,
-            n_threads=8,
-            n_gpu_layers=35,  # Adjust based on your GPU capacity
-            verbose=False,
-        )
-        return {
-            'model': tinyllama,
-            'cost': 1
-        }
-    elif model_name == "wizardmath":
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16  # Match your input dtype
-        )
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16  # Match your input dtype
+    )
+    if model_name == "wizardmath":
         wizardmath_tokenizer = AutoTokenizer.from_pretrained("WizardLM/WizardMath-7B-V1.1")
         wizardmath_model = AutoModelForCausalLM.from_pretrained(
             "WizardLM/WizardMath-7B-V1.1",
@@ -38,8 +22,37 @@ def get_model(model_name):
         )
         return {
             'model': wizardmath_model,
+            'model_name': "wizardmath",
             'tokenizer': wizardmath_tokenizer,
             'cost': 10
+        }
+    elif model_name == "phi3":
+        model = AutoModelForCausalLM.from_pretrained(
+            "microsoft/Phi-3-mini-4k-instruct",
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            attn_implementation="flash_attention_2"  # Enable Flash Attention
+        )
+        
+        tokenizer = AutoTokenizer.from_pretrained(
+            "microsoft/Phi-3-mini-4k-instruct", 
+            trust_remote_code=True
+        )
+        
+        # Create pipeline with the Flash Attention enabled model
+        phi3_pipe = pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            device_map="auto"
+        )
+        
+        return {
+            'model': phi3_pipe,
+            'model_name': "phi3",
+            'tokenizer': tokenizer,
+            'cost': 3
         }
     
 def get_dataset():
@@ -74,42 +87,12 @@ Final calculation: [calculation]
 
 NOW SOLVE THE PROBLEM CORRECTLY:
 """
+    model_obj = models[model_index]['model']
+    tokenizer = models[model_index].get('tokenizer', None)
+    if tokenizer:
+        tokenizer = models[model_index]['tokenizer']
     
-    if model_index == 0:  # tinyllama
-        model_obj = models[0]['model']
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant that solves math problems step by step."
-            },
-            {
-                "role": "user",
-                "content": f"""Solve this math problem:
-{problem['question']}
-
-Show your work step by step and end with the final answer in the format: #### [number]
-
-Example of proper format:
-Question: Janet has 3 apples and buys 2 more. How many does she have?
-Step 1: Janet starts with 3 apples
-Step 2: She buys 2 more apples
-Step 3: Total apples = 3 + 2 = 5
-#### 5"""
-            }
-        ]
-        
-        # Use create_chat_completion with a zero temperature
-        result = model_obj.create_chat_completion(
-            messages=messages,
-            max_tokens=1024,
-            temperature=0.0,  # Zero temperature for deterministic output
-            stop=["User:", "Question:"]  # Prevent continuing to new questions
-        )
-        
-        return result['choices'][0]['message']['content']
-    else:  # wizardmath
-        model_obj = models[1]['model']
-        tokenizer = models[1]['tokenizer']
+    if models[model_index]['model_name'] == "wizardmath":
         inputs = tokenizer(prompt, return_tensors="pt").to(model_obj.device)
         outputs = model_obj.generate(
             inputs.input_ids,
@@ -120,6 +103,20 @@ Step 3: Total apples = 3 + 2 = 5
             pad_token_id=tokenizer.eos_token_id,
         )
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    
+    elif models[model_index]['model_name'] == "phi3":        
+        result = model_obj(
+            prompt,
+            max_new_tokens=1024,
+            temperature=0.1,
+            do_sample=True,
+            return_full_text=False  # Only return the generated part
+        )
+        
+        # Extract the generated text from the result
+        # Pipeline returns a list of dictionaries with 'generated_text' key
+        generated_text = result[0]['generated_text']
+        return generated_text
 
 if __name__ == "__main__":
     gsm8k_dataset = {
@@ -127,12 +124,7 @@ if __name__ == "__main__":
         'test': get_dataset()[1]
     }
 
-    # models = {
-    #     'tinyllama': get_model('tinyllama'),
-    #     'wizardmath': get_model('wizardmath')
-    # }
-
-    models = [get_model('tinyllama'), get_model('wizardmath')]
+    models = [get_model('phi3'), get_model('wizardmath')]
 
     q_learner = Q_Learner(models)
 
