@@ -29,15 +29,21 @@ def get_model(model_name):
             'tokenizer': wizardmath_tokenizer,
             'cost': 10
         }
-    # if model_name == "smolLM2":
-    #     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-1.7B")
-    #     model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-1.7B")
-    #     return {
-    #         'model': model,
-    #         'model_name': "smolLM2",
-    #         'tokenizer': tokenizer,
-    #         'cost': 4
-    #     }
+    elif model_name == "phi2":
+        phi2_tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-2", trust_remote_code=True)
+        phi2_model = AutoModelForCausalLM.from_pretrained(
+            "microsoft/phi-2",
+            quantization_config=quantization_config,
+            device_map={"": 0},
+            torch_dtype=torch.float16,
+            trust_remote_code=True
+        )
+        return {
+            'model': phi2_model,
+            'model_name': "phi2",
+            'tokenizer': phi2_tokenizer,
+            'cost': 5  # Lower cost since it's a smaller model
+        }
     
 def get_dataset():
     train_dataset = load_dataset("openai/gsm8k", "main", split='train')
@@ -53,56 +59,40 @@ def extract_answer(answer_text):
     return None
 
 def process_problem(problem, model_index, models):
-    prompt = f"""Solve ONLY this math problem step by step: 
-{problem['question']}
+    prompt = f"""
 
 Follow these instructions:
 1. Work through the problem step by step
-2. Calculate the final answer
-3. On the last line, write ONLY: #### <your numerical answer>
+2. Calculate the numerical answer
+3. On the last line, write ONLY: #### <numerical answer>. Do not add any units like "kg" or "m", or any currency symbols like "$".
+4. Do not write anything after the final answer
 
 -------------------
 EXAMPLE FORMAT:
 Step 1: [explanation]
 Step 2: [explanation]
 Final calculation: [calculation]
-#### <answer>
+#### [numerical answer]
 -------------------
 
-NOW SOLVE THE PROBLEM CORRECTLY:
+NOW SOLVE THE PROBLEM CORRECTLY: {problem['question']}
 """
     model_obj = models[model_index]['model']
     tokenizer = models[model_index].get('tokenizer', None)
     if tokenizer:
         tokenizer = models[model_index]['tokenizer']
     
-    if models[model_index]['model_name'] == "wizardmath":
-        inputs = tokenizer(prompt, return_tensors="pt")
-        outputs = model_obj.generate(
-            inputs.input_ids,
-            max_new_tokens=1024,
-            temperature=0.1,
-            do_sample=True,
-            attention_mask=inputs.attention_mask,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-        return tokenizer.decode(outputs[0], skip_special_tokens=True)
-    # elif models[model_index]['model_name'] == "smolLM2":
-    #     inputs = tokenizer(prompt, return_tensors="pt")
-    
-    #     # Special generation parameters for SmolLM2
-    #     outputs = model_obj.generate(
-    #         inputs.input_ids,
-    #         max_new_tokens=1024,
-    #         temperature=0.3,  # Better for this architecture
-    #         top_p=0.9,        # Recommended for SmolLM
-    #         do_sample=True,
-    #         pad_token_id=tokenizer.eos_token_id,
-    #         repetition_penalty=1.1  # Reduces answer duplication
-    #     )
-    #     # Skip prompt in response and clean output
-    #     full_response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    #     return full_response.replace(prompt, "").strip()
+    # if models[model_index]['model_name'] == "wizardmath":
+    inputs = tokenizer(prompt, return_tensors="pt")
+    outputs = model_obj.generate(
+        inputs.input_ids,
+        max_new_tokens=1024,
+        temperature=0.1,
+        do_sample=True,
+        attention_mask=inputs.attention_mask,
+        # pad_token_id=tokenizer.eos_token_id,
+    )
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 if __name__ == "__main__":
     gsm8k_dataset = {
