@@ -12,6 +12,7 @@ class Q_Learner():
         # With 3 complexity levels and 3 length levels
         complexity_levels = ["simple", "moderate", "complex"]
         length_levels = ["short", "medium", "long"]
+        self.num_models = len(models)
 
         # Initialize Q-table
         if load_q_table:
@@ -21,7 +22,7 @@ class Q_Learner():
             q_table = {}
             for complexity in complexity_levels:
                 for length in length_levels:
-                    q_table[(complexity, length)] = [0, 0]  # [value of using cheap LLM, value of using expensive LLM]
+                    q_table[(complexity, length)] = [0] * self.num_models
         self.q_table = q_table
 
         self.learning_rate = learning_rate
