@@ -5,8 +5,9 @@ from datasets import load_dataset
 import re
 import numpy as np
 from tqdm import tqdm
-from Q_learner import Q_Learner
 import torch
+from Q_learner import Q_Learner
+from dqn import DQN_Learner
 
 def get_model(model_name):
     quantization_config = BitsAndBytesConfig(
@@ -94,14 +95,7 @@ NOW SOLVE THE PROBLEM CORRECTLY: {problem['question']}
     )
     return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-if __name__ == "__main__":
-    gsm8k_dataset = {
-        'train': get_dataset()[0],
-        'test': get_dataset()[1]
-    }
-
-    models = [get_model('wizardmath')]
-
+def run_q_learner(dataset, models):
     q_learner = Q_Learner(models)
 
     dataset = gsm8k_dataset['train']
@@ -184,3 +178,93 @@ if __name__ == "__main__":
     #         correct_predictions += 1
     # accuracy = correct_predictions / total_predictions
     # print(f"Test Accuracy: {accuracy:.4f}")
+
+
+def run_dqn(dataset, models):
+    dqn_learner = DQN_Learner(
+        models, 
+        learning_rate=0.001,
+        discount_factor=0.9,
+        epsilon=0.1,
+        epsilon_decay=0.995,
+        epsilon_min=0.01
+    )
+
+    dataset = gsm8k_dataset['train']
+    for i in tqdm(range(5), desc="Training DQN learner"):
+        current_problem = dataset[i]
+        next_problem = dataset[i+1]
+        
+        # Get current state
+        current_state = dqn_learner.get_state(current_problem["question"])
+        
+        # Choose model using the DQN policy
+        model_index, model = dqn_learner.choose_model(current_state)
+        
+        # Process the current problem
+        model_output = process_problem(current_problem, model_index, models)
+
+        if model_index == 0:
+            print(f"\nProblem {i}: {current_problem['question']}")
+            print(f"\nChosen model: {model_index} ({'cheap' if model_index == 0 else 'expensive'})")
+            print(f"\nModel output: {model_output}")
+        
+        # Extract answers and check correctness
+        predicted_answer = extract_answer(model_output)
+        print(f"Predicted answer: {predicted_answer}")
+        true_answer = extract_answer(current_problem["answer"])
+        print(f"True answer: {true_answer}")
+        is_correct = (predicted_answer == true_answer) if predicted_answer and true_answer else False
+        
+        # Calculate reward
+        reward = dqn_learner.calculate_reward(model_index, is_correct)
+        
+        # Get next state
+        next_state = dqn_learner.get_state(next_problem["question"])
+        
+        # Train the DQN model
+        dqn_learner.train(current_state, model_index, reward, next_state, done=False)
+        
+        # Decay epsilon after each problem
+        dqn_learner.decay_epsilon()
+    
+    # Save the trained DQN model
+    dqn_learner.save_model('dqn_model.pth')
+    
+    # Evaluation phase (optional)
+    print("\nEvaluation Phase:")
+    test_dataset = gsm8k_dataset['test']
+    correct_predictions = 0
+    total_predictions = min(10, len(test_dataset))  # Evaluate on first 10 test problems
+    
+    for i in range(total_predictions):
+        problem = test_dataset[i]
+        state = dqn_learner.get_state(problem["question"])
+        
+        # Use the trained policy with no exploration (epsilon=0)
+        epsilon_backup = dqn_learner.epsilon
+        dqn_learner.epsilon = 0
+        model_index, _ = dqn_learner.choose_model(state)
+        dqn_learner.epsilon = epsilon_backup
+        
+        model_output = process_problem(problem, model_index, models)
+        predicted_answer = extract_answer(model_output)
+        true_answer = extract_answer(problem["answer"])
+        
+        if predicted_answer == true_answer:
+            correct_predictions += 1
+            
+        print(f"Test Problem {i}: {'Correct' if predicted_answer == true_answer else 'Incorrect'}")
+        
+    print(f"Accuracy: {correct_predictions/total_predictions:.2f}")
+    print(f"Model usage statistics: Cheap model: {dqn_learner.stats['cheap_model_uses']}, Expensive model: {dqn_learner.stats['expensive_model_uses']}")
+
+if __name__ == "__main__":
+    gsm8k_dataset = {
+        'train': get_dataset()[0],
+        'test': get_dataset()[1]
+    }
+
+    models = [get_model('wizardmath')]
+
+    run_dqn(gsm8k_dataset, models)
