@@ -8,6 +8,7 @@ from tqdm import tqdm
 import torch
 from Q_learner import Q_Learner
 from dqn import DQN_Learner
+import re
 
 def get_model(model_name):
     quantization_config = BitsAndBytesConfig(
@@ -93,7 +94,58 @@ NOW SOLVE THE PROBLEM CORRECTLY: {problem['question']}
         attention_mask=inputs.attention_mask,
         # pad_token_id=tokenizer.eos_token_id,
     )
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    
+    prompt_end = full_output.find(f"NOW SOLVE THE PROBLEM CORRECTLY: {problem['question']}")
+    if prompt_end != -1:
+        # Move past the question to get to the solution
+        prompt_end = prompt_end + len(f"NOW SOLVE THE PROBLEM CORRECTLY: {problem['question']}")
+        model_response = full_output[prompt_end:].strip()
+    else:
+        # Fallback if we can't find the exact prompt ending
+        model_response = full_output
+
+    # Now extract the numeric answer using a more reliable approach
+    import re
+    
+    # Check for #### pattern first (Phi-2 style)
+    hash_match = re.search(r'####\s*([\$]?\s*\d+(?:\.\d+)?)', model_response)
+    if hash_match:
+        # Extract just the number, removing any currency symbols
+        answer_text = hash_match.group(1)
+        numeric_match = re.search(r'(\d+(?:\.\d+)?)', answer_text)
+        if numeric_match:
+            numeric_answer = numeric_match.group(1)
+            return f"{prompt}\n\n{model_response.split('####')[0].strip()}\n#### {numeric_answer}"
+    
+    # Check for explicit "answer is" pattern (WizardMath style)
+    answer_match = re.search(r'(?:final answer|the answer is)[^0-9]*?([\$]?\s*\d+(?:\.\d+)?)', 
+                            model_response.lower())
+    if answer_match:
+        answer_text = answer_match.group(1)
+        numeric_match = re.search(r'(\d+(?:\.\d+)?)', answer_text)
+        if numeric_match:
+            numeric_answer = numeric_match.group(1)
+            # Find where this answer occurs in the text to split it there
+            answer_position = model_response.lower().find(answer_match.group(0))
+            if answer_position != -1:
+                return f"{prompt}\n\n{model_response[:answer_position].strip()}\n#### {numeric_answer}"
+    
+    # If all else fails, look for numbers in the last few lines
+    lines = model_response.split('\n')
+    for i in range(len(lines)-1, max(0, len(lines)-5), -1):
+        line = lines[i]
+        # Skip lines that are clearly not the answer
+        if len(line.strip()) < 1 or any(word in line.lower() for word in ["step", "explanation"]):
+            continue
+            
+        numeric_match = re.search(r'(\d+(?:\.\d+)?)', line)
+        if numeric_match:
+            numeric_answer = numeric_match.group(1)
+            return f"{prompt}\n\n{model_response.split(line)[0].strip()}\n#### {numeric_answer}"
+    
+    # If we couldn't extract an answer, return the unmodified output
+    return full_output
 
 def run_q_learner(dataset, models):
     q_learner = Q_Learner(models)
@@ -229,7 +281,7 @@ def run_dqn(dataset, models):
         dqn_learner.decay_epsilon()
     
     # Save the trained DQN model
-    dqn_learner.save_model('dqn_model.pth')
+    # dqn_learner.save_model('dqn_model.pth')
     
     # Evaluation phase (optional)
     print("\nEvaluation Phase:")
@@ -265,6 +317,6 @@ if __name__ == "__main__":
         'test': get_dataset()[1]
     }
 
-    models = [get_model('wizardmath')]
+    models = [get_model('phi2'), get_model('wizardmath')]
 
-    run_dqn(gsm8k_dataset, models)
+    run_q_learner(gsm8k_dataset, models)
