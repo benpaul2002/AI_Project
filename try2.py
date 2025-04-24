@@ -8,6 +8,7 @@ from tqdm import tqdm
 import torch
 from Q_learner import Q_Learner
 from dqn import DQN_Learner
+from ppo import PPO_Agent
 import re
 
 def get_model(model_name):
@@ -104,9 +105,6 @@ NOW SOLVE THE PROBLEM CORRECTLY: {problem['question']}
     else:
         # Fallback if we can't find the exact prompt ending
         model_response = full_output
-
-    # Now extract the numeric answer using a more reliable approach
-    import re
     
     # Check for #### pattern first (Phi-2 style)
     hash_match = re.search(r'####\s*([\$]?\s*\d+(?:\.\d+)?)', model_response)
@@ -311,12 +309,109 @@ def run_dqn(dataset, models):
     print(f"Accuracy: {correct_predictions/total_predictions:.2f}")
     print(f"Model usage statistics: Cheap model: {dqn_learner.stats['cheap_model_uses']}, Expensive model: {dqn_learner.stats['expensive_model_uses']}")
 
+def run_ppo(dataset, models, num_episodes=5):
+    """Train a PPO agent to select models based on problem characteristics"""
+    ppo_agent = PPO_Agent(models)
+    
+    train_data = dataset['train']
+    
+    for episode in range(num_episodes):
+        print(f"Episode {episode+1}/{num_episodes}")
+        
+        # Process multiple problems in each episode
+        for i in range(min(10, len(train_data) - 1)):
+            current_problem = train_data[i]
+            next_problem = train_data[i+1]
+            
+            # Get current state
+            current_state = ppo_agent.get_state(current_problem["question"])
+            
+            # Choose model using policy network
+            model_index, model, action_prob = ppo_agent.choose_model(current_state)
+            
+            # Process the problem using the chosen model
+            model_output = process_problem(current_problem, model_index, models)
+
+            if model_index == 0:
+                print(f"\nProblem {i}: {current_problem['question']}")
+                print(f"\nChosen model: {model_index} ({'cheap' if model_index == 0 else 'expensive'})")
+                print(f"\nModel output: {model_output}")
+            
+            # Check correctness
+            predicted_answer = extract_answer(model_output)
+            print(f"Predicted answer: {predicted_answer}")
+            true_answer = extract_answer(current_problem["answer"])
+            print(f"True answer: {true_answer}")
+            is_correct = (predicted_answer == true_answer) if predicted_answer and true_answer else False
+            
+            # Calculate reward
+            reward = ppo_agent.calculate_reward(model_index, is_correct)
+            
+            # Get next state
+            next_state = ppo_agent.get_state(next_problem["question"])
+            
+            # Store experience
+            done = (i == min(10, len(train_data) - 1) - 1)
+            ppo_agent.remember(current_state, model_index, reward, next_state, action_prob, done)
+        
+        # Update policy after collecting experiences from this episode
+        ppo_agent.update_policy()
+        
+        # Evaluate periodically
+        if (episode + 1) % 10 == 0:
+            evaluate_ppo(ppo_agent, dataset['test'][:10])
+    
+    # Save the trained model
+    ppo_agent.save_model('ppo_policy.pt', 'ppo_value.pt')
+    
+    return ppo_agent
+
+def evaluate_ppo(ppo_agent, test_data):
+    """Evaluate a trained PPO agent"""
+    correct_predictions = 0
+    total_cost = 0
+    
+    for problem in test_data:
+        state = ppo_agent.get_state(problem["question"])
+        
+        # Use the trained policy without exploration
+        model_index, model, _ = ppo_agent.choose_model(state)
+        
+        # Process the problem
+        model_output = process_problem(problem, model_index, ppo_agent.models)
+        
+        # Check correctness
+        predicted_answer = extract_answer(model_output)
+        true_answer = extract_answer(problem["answer"])
+        is_correct = (predicted_answer == true_answer) if predicted_answer and true_answer else False
+        
+        if is_correct:
+            correct_predictions += 1
+        
+        # Add cost
+        total_cost += ppo_agent.models[model_index]['cost']
+    
+    accuracy = correct_predictions / len(test_data)
+    avg_cost = total_cost / len(test_data)
+    
+    print(f"Evaluation results:")
+    print(f"  Accuracy: {accuracy:.2f}")
+    print(f"  Average cost per problem: {avg_cost:.2f}")
+    print(f"  Cheap model uses: {ppo_agent.stats['cheap_model_uses']}")
+    print(f"  Expensive model uses: {ppo_agent.stats['expensive_model_uses']}")
+
+
 if __name__ == "__main__":
     gsm8k_dataset = {
         'train': get_dataset()[0],
         'test': get_dataset()[1]
     }
 
-    models = [get_model('phi2'), get_model('wizardmath')]
+    models = [get_model('wizardmath')]
 
-    run_q_learner(gsm8k_dataset, models)
+    # run_q_learner(gsm8k_dataset, models)
+    run_ppo(gsm8k_dataset, models)
+
+
+# TODO: Can't load both models currently / colab
+# TODO: ppo
