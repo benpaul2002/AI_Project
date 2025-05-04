@@ -183,7 +183,7 @@ gsm8k_dataset = {
 # models = [get_model('phi2'), get_model('wizardmath')]
 model = get_model('phi2')
 
-num_problems = 300
+num_problems = 1000
 subset = gsm8k_dataset['train'].select(range(num_problems))
 total_correct = 0
 cur_problem_idx = 0
@@ -215,6 +215,6 @@ for problem in tqdm(subset):
     })
 
     # Save to CSV
-    problem_data.to_csv('phi2_preds_dataset.csv', index=False)
+    problem_data.to_csv('phi2_preds_dataset_large.csv', index=False)
 
 # phi2_preds
