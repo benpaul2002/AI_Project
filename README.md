@@ -10,6 +10,6 @@
 Files 1-4 must be run in order, file 5 is independent.
 
 ## Requirements -
-Python 3.11.9
-numpy 2.2.4
-cuda 12.1
+Python 3.11.9 \
+numpy 2.2.4 \
+cuda 12.1 
