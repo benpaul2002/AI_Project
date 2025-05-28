@@ -1,5 +1,11 @@
 # Adaptive Difficulty-Driven Router
 
+Final Project for CSE537 Artificial Intelligence. Router predicts the difficulty of math word problems from GSM8K dataset and sends the hard problems to WizardMath (7B parameter model) and the easy problems to Phi2 (2.7B parameter model). Two primary methods were used for the development of the router - 
+1. Random Forest + XGBoost (Stacked Classifier)
+2. LinUCB (Multi Armed Bandits Algorithm)
+
+![flowchart drawio](https://github.com/user-attachments/assets/b00bda46-4b28-4d77-9b20-82a2e88a9bc7)
+
 ## Code Files - 
 1. phi2_solo_tester.py - contains the code to run phi2 on GSM8K problems. We used this to first generate the dataset for training our classifier (2000 problems of GSM8K) and then again to use as a baseline for testing our router (500 problems of GSM8K).
 2. wizardmath_solo_tester.ipynb - contains essentially the same code as phi2_solo_tester.py, except it uses wizardmath instead. We used this for generating the wizardmath baseline.
